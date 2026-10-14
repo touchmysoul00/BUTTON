@@ -87,3 +87,42 @@ saveRemote.OnServerInvoke = function(_, picks)
 	end
 	return true
 end
+
+-- Force R6 ------------------------------------------------------------------
+-- The animation pack is made for R6, so swap any R15 character for an R6
+-- one with the same look. (Setting Game Settings > Avatar to R6 also works.)
+local StarterPlayer = game:GetService("StarterPlayer")
+
+local function makeR6(player, oldCharacter)
+	local ok, description = pcall(Players.GetHumanoidDescriptionFromUserId, Players, math.max(player.UserId, 1))
+	if not ok then
+		description = Instance.new("HumanoidDescription")
+	end
+	local character = Players:CreateHumanoidModelFromDescription(description, Enum.HumanoidRigType.R6)
+	character.Name = player.Name
+	-- give it our scripts (manually made characters don't get them)
+	for _, script in StarterPlayer.StarterCharacterScripts:GetChildren() do
+		local existing = character:FindFirstChild(script.Name)
+		if existing then
+			existing:Destroy()
+		end
+		script:Clone().Parent = character
+	end
+	character:PivotTo(oldCharacter:GetPivot())
+	player.Character = character
+	character.Parent = workspace
+	oldCharacter:Destroy()
+end
+
+local function onPlayer(player)
+	player.CharacterAdded:Connect(function(character)
+		local humanoid = character:WaitForChild("Humanoid")
+		if humanoid.RigType ~= Enum.HumanoidRigType.R6 then
+			task.defer(makeR6, player, character)
+		end
+	end)
+end
+Players.PlayerAdded:Connect(onPlayer)
+for _, player in Players:GetPlayers() do
+	onPlayer(player)
+end
