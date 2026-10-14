@@ -1,6 +1,6 @@
 -- Animation previewer + selector.
--- Click an animation to preview it (on the pack's dummy and on you), then
--- click a slot to assign it. Standard slots are applied to your R6
+-- Click an animation to preview it in the preview window (on the pack's
+-- own dummy), then click a slot to apply it. Standard slots are applied to your R6
 -- character's Animate script live. "Print selection" writes the picks to
 -- Output so they can be copied into the final pack.
 local Players = game:GetService("Players")
@@ -95,8 +95,8 @@ end
 local gui = make("ScreenGui", { Name = "AnimPreviewer", ResetOnSpawn = false }, player:WaitForChild("PlayerGui"))
 
 local frame = make("Frame", {
-	Size = UDim2.fromOffset(520, 460),
-	Position = UDim2.new(0, 16, 0.5, -230),
+	Size = UDim2.fromOffset(760, 460),
+	Position = UDim2.new(0.5, -380, 0.5, -230),
 	BackgroundColor3 = Color3.fromRGB(30, 30, 36),
 }, gui)
 make("UICorner", {}, frame)
@@ -122,12 +122,12 @@ local status = make("TextLabel", {
 	TextColor3 = Color3.fromRGB(180, 180, 190),
 	TextXAlignment = Enum.TextXAlignment.Left,
 	TextYAlignment = Enum.TextYAlignment.Top,
-	Text = "1. Click an animation to preview it.  2. Click a slot on the right to assign it.",
+	Text = "1. Click an animation on the left - it plays in the preview window.  2. Click a slot on the right to apply it.",
 }, frame)
 
 -- left: animation list
 local list = make("ScrollingFrame", {
-	Size = UDim2.new(0, 260, 1, -108),
+	Size = UDim2.new(0, 240, 1, -108),
 	Position = UDim2.fromOffset(8, 64),
 	BackgroundTransparency = 1,
 	ScrollBarThickness = 6,
@@ -138,8 +138,8 @@ make("UIListLayout", { Padding = UDim.new(0, 4) }, list)
 
 -- right: slots
 local slotList = make("ScrollingFrame", {
-	Size = UDim2.new(1, -284, 1, -108),
-	Position = UDim2.fromOffset(276, 64),
+	Size = UDim2.new(0, 220, 1, -108),
+	Position = UDim2.new(1, -228, 0, 64),
 	BackgroundTransparency = 1,
 	ScrollBarThickness = 6,
 	AutomaticCanvasSize = Enum.AutomaticSize.Y,
@@ -147,9 +147,35 @@ local slotList = make("ScrollingFrame", {
 }, frame)
 make("UIListLayout", { Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder }, slotList)
 
+-- middle: preview window
+local viewport = make("ViewportFrame", {
+	Size = UDim2.fromOffset(268, 340),
+	Position = UDim2.fromOffset(256, 64),
+	BackgroundColor3 = Color3.fromRGB(55, 58, 70),
+	Ambient = Color3.fromRGB(200, 200, 200),
+	LightColor = Color3.new(1, 1, 1),
+}, frame)
+make("UICorner", {}, viewport)
+local worldModel = make("WorldModel", {}, viewport)
+local camera = make("Camera", { FieldOfView = 40 }, viewport)
+viewport.CurrentCamera = camera
+local previewLabel = make("TextLabel", {
+	Size = UDim2.new(1, -12, 0, 20),
+	Position = UDim2.fromOffset(6, 4),
+	BackgroundTransparency = 1,
+	Font = Enum.Font.GothamBold,
+	TextSize = 13,
+	TextColor3 = Color3.new(1, 1, 1),
+	TextXAlignment = Enum.TextXAlignment.Left,
+	TextTruncate = Enum.TextTruncate.AtEnd,
+	Text = "Preview",
+	ZIndex = 2,
+}, viewport)
+
 local stopButton = button("Stop", Color3.fromRGB(170, 50, 50), frame)
 stopButton.Size = UDim2.new(0.5, -12, 0, 30)
 stopButton.Position = UDim2.new(0, 8, 1, -38)
+stopButton.Text = "Stop preview"
 stopButton.Font = Enum.Font.GothamBold
 
 local printButton = button("Print selection", Color3.fromRGB(40, 120, 70), frame)
@@ -158,83 +184,73 @@ printButton.Position = UDim2.new(0.5, 4, 1, -38)
 printButton.Font = Enum.Font.GothamBold
 
 -- Playback ------------------------------------------------------------------
-local currentTracks = {}
+local currentTrack
 local previewRig
 local current -- entry being previewed
 
 local function stop()
-	for _, track in currentTracks do
-		track:Stop(0.2)
+	if currentTrack then
+		currentTrack:Stop(0)
+		currentTrack = nil
 	end
-	currentTracks = {}
 	if previewRig then
 		previewRig:Destroy()
 		previewRig = nil
 	end
+	previewLabel.Text = "Preview"
 end
 
-local function getAnimator(model)
-	local controller = model:FindFirstChildOfClass("Humanoid") or model:FindFirstChildOfClass("AnimationController")
-	if not controller then
-		return nil
-	end
-	return controller:FindFirstChildOfClass("Animator") or Instance.new("Animator", controller)
-end
-
-local function playOn(model, entry)
-	local animator = model and getAnimator(model)
-	if not animator then
-		return nil
-	end
-	local ok, track = pcall(animator.LoadAnimation, animator, entry.anim)
-	if not ok then
-		warn("[AnimPreviewer] Couldn't load", entry.name, track)
-		return nil
-	end
-	track.Priority = Enum.AnimationPriority.Action4
-	track.Looped = true
-	track:Play(0.2)
-	table.insert(currentTracks, track)
-	return track
-end
-
--- copy of the pack's own dummy in front of you, so the animation is shown
--- on the rig it was made for
+-- copy of the pack's own dummy (the rig the animation was made for),
+-- placed in the preview window's WorldModel
 local function spawnPreviewRig(rig)
-	local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
-	if not rig or not root then
-		return nil
-	end
 	local clone = rig:Clone()
 	for _, inst in clone:GetDescendants() do
 		if inst.Name == "AnimSaves" or inst:IsA("Script") or inst:IsA("LocalScript") then
 			inst:Destroy()
-		elseif inst:IsA("BasePart") then
-			inst.CanCollide = false
 		end
 	end
-	local rigRoot = clone:FindFirstChild("HumanoidRootPart") or clone.PrimaryPart
-	if rigRoot then
-		rigRoot.Anchored = true
-		clone.PrimaryPart = rigRoot
-		local spot = (root.CFrame * CFrame.new(0, 0, -8)).Position
-		clone:PivotTo(CFrame.lookAt(spot, Vector3.new(root.Position.X, spot.Y, root.Position.Z)))
+	local root = clone:FindFirstChild("HumanoidRootPart") or clone.PrimaryPart or clone:FindFirstChildWhichIsA("BasePart", true)
+	if not root then
+		clone:Destroy()
+		return nil
 	end
-	clone.Parent = workspace
+	root.Anchored = true
+	clone.PrimaryPart = root
+	clone:PivotTo(CFrame.new())
+	clone.Parent = worldModel
+	-- camera in front of the rig, framing the whole body
+	local box, size = clone:GetBoundingBox()
+	local distance = math.max(size.X, size.Y) * 1.9 + 2
+	local center = box.Position
+	camera.CFrame = CFrame.lookAt(center + Vector3.new(0, 0, -distance), center)
 	return clone
 end
 
 local function play(entry)
 	stop()
 	current = entry
-	previewRig = spawnPreviewRig(entry.rig)
-	local rigTrack = playOn(previewRig, entry)
-	local charTrack = playOn(player.Character, entry)
-	if not rigTrack and not charTrack then
-		status.Text = "Couldn't play " .. entry.name .. " - check Output."
+	if not entry.rig then
+		status.Text = entry.name .. " has no dummy rig to preview on."
 		return
 	end
-	status.Text = "Previewing: " .. entry.name .. "  -> click a slot on the right to assign it."
+	previewRig = spawnPreviewRig(entry.rig)
+	local controller = previewRig and (previewRig:FindFirstChildOfClass("Humanoid") or previewRig:FindFirstChildOfClass("AnimationController"))
+	if not controller then
+		status.Text = "Couldn't preview " .. entry.name .. " - its dummy has no Humanoid."
+		return
+	end
+	local animator = controller:FindFirstChildOfClass("Animator") or Instance.new("Animator", controller)
+	local ok, track = pcall(animator.LoadAnimation, animator, entry.anim)
+	if not ok then
+		warn("[AnimPreviewer] Couldn't load", entry.name, track)
+		status.Text = "Couldn't load " .. entry.name .. " - check Output."
+		return
+	end
+	track.Looped = true
+	track:Play(0)
+	currentTrack = track
+	previewLabel.Text = entry.name
+	status.Text = "Previewing " .. entry.name .. ". Like it? Click a slot on the right to apply it."
 end
 
 -- Applying to the character -------------------------------------------------
@@ -295,7 +311,7 @@ for i, slot in SLOTS do
 		else
 			selection[slot.name] = current
 			status.Text = ("Assigned %s -> %s%s"):format(current.name, slot.name,
-				slot.animate and " (applied to you - press Stop to see it)" or " (custom slot, scripted in the final pack)")
+				slot.animate and " (applied to your character - walk around to see it)" or " (custom slot, scripted in the final pack)")
 		end
 		refreshSlot(slot)
 		applyToCharacter()
@@ -305,7 +321,7 @@ end
 stopButton.MouseButton1Click:Connect(function()
 	stop()
 	current = nil
-	status.Text = "Stopped. Move around to see your assigned animations."
+	status.Text = "Stopped. Walk around to see the animations you applied."
 end)
 
 printButton.MouseButton1Click:Connect(function()
