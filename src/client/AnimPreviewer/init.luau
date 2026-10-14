@@ -94,6 +94,13 @@ end
 
 local gui = make("ScreenGui", { Name = "AnimPreviewer", ResetOnSpawn = false }, player:WaitForChild("PlayerGui"))
 
+-- P shows/hides the previewer
+game:GetService("UserInputService").InputBegan:Connect(function(input, processed)
+	if not processed and input.KeyCode == Enum.KeyCode.P then
+		gui.Enabled = not gui.Enabled
+	end
+end)
+
 local frame = make("Frame", {
 	Size = UDim2.fromOffset(760, 460),
 	Position = UDim2.new(0.5, -380, 0.5, -230),
