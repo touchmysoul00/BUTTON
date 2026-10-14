@@ -1,7 +1,7 @@
 -- Animation previewer + selector.
 -- Click an animation to preview it in the preview window (on the pack's
 -- own dummy), then click a slot to apply it to your character live.
--- "Print selection" writes the picks to Output so they can go into AnimConfig.
+-- Picks are saved automatically (see the server script) and kept after Stop.
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local KeyframeSequenceProvider = game:GetService("KeyframeSequenceProvider")
@@ -12,7 +12,17 @@ local config = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("An
 local SLOTS = config.Order
 local autoPicks = {} -- filled once the animation list is loaded
 
-local selection = {} -- slot name -> entry
+local HttpService = game:GetService("HttpService")
+
+-- slot name -> pack path, starting from the saved picks
+local selection = {}
+do
+	local saved = ReplicatedStorage:WaitForChild("SavedAnimPicks", 10)
+	local ok, data = pcall(HttpService.JSONDecode, HttpService, saved and saved.Value or "{}")
+	if ok and type(data) == "table" then
+		selection = data
+	end
+end
 
 -- Collect animations ------------------------------------------------------
 local function collectAnimations()
@@ -171,7 +181,7 @@ stopButton.Position = UDim2.new(0, 8, 1, -38)
 stopButton.Text = "Stop preview"
 stopButton.Font = Enum.Font.GothamBold
 
-local printButton = button("Print selection", Color3.fromRGB(40, 120, 70), frame)
+local printButton = button("Reset all to automatic", Color3.fromRGB(90, 90, 100), frame)
 printButton.Size = UDim2.new(0.5, -12, 0, 30)
 printButton.Position = UDim2.new(0.5, 4, 1, -38)
 printButton.Font = Enum.Font.GothamBold
@@ -251,16 +261,43 @@ local slotButtons = {}
 
 -- Animate script picks these up live (player attributes "Anim_<slot>")
 local function applySlot(slot)
-	local entry = selection[slot]
-	player:SetAttribute("Anim_" .. slot, entry and entry.name or nil)
+	-- "" tells the Animate script to go back to automatic
+	player:SetAttribute("Anim_" .. slot, selection[slot] or "")
+end
+
+local saveRemote = ReplicatedStorage:WaitForChild("SaveAnimPicks", 10)
+local saving, pending = false, false
+local function save()
+	if not saveRemote then
+		return
+	end
+	if saving then
+		pending = true -- save again once the current save finishes
+		return
+	end
+	saving = true
+	task.spawn(function()
+		local ok, success, err = pcall(saveRemote.InvokeServer, saveRemote, selection)
+		saving = false
+		if pending then
+			pending = false
+			save()
+			return
+		end
+		if ok and success then
+			status.Text ..= "  Saved."
+		else
+			status.Text = "Applied, but NOT saved after Stop: " .. tostring(err or success)
+		end
+	end)
 end
 
 local function refreshSlot(slot)
-	local entry = selection[slot]
-	local current = entry and entry.name or config.Slots[slot] or autoPicks[slot]
+	local picked = selection[slot]
+	local current = picked or config.Slots[slot] or autoPicks[slot]
 	local b = slotButtons[slot]
 	b.Text = ("  %s: %s"):format(slot, current or "—")
-	b.BackgroundColor3 = entry and Color3.fromRGB(40, 90, 150) or Color3.fromRGB(50, 50, 60)
+	b.BackgroundColor3 = picked and Color3.fromRGB(40, 90, 150) or Color3.fromRGB(50, 50, 60)
 end
 
 for i, slot in SLOTS do
@@ -276,15 +313,16 @@ for i, slot in SLOTS do
 			status.Text = "Click an animation on the left first, then a slot."
 			return
 		end
-		if selection[slot] == current then
+		if selection[slot] == current.name then
 			selection[slot] = nil -- click again to undo
-			status.Text = "Reset " .. slot .. " to the default."
+			status.Text = "Reset " .. slot .. " to automatic."
 		else
-			selection[slot] = current
-			status.Text = ("%s -> %s. Applied to your character - close this with P and move to try it."):format(current.name, slot)
+			selection[slot] = current.name
+			status.Text = ("%s -> %s. Press P and move to try it."):format(current.name, slot)
 		end
 		refreshSlot(slot)
 		applySlot(slot)
+		save()
 	end)
 end
 
@@ -295,14 +333,13 @@ stopButton.MouseButton1Click:Connect(function()
 end)
 
 printButton.MouseButton1Click:Connect(function()
-	local lines = { "[AnimPreviewer] Selection - copy this to Claude:" }
 	for _, slot in SLOTS do
-		local entry = selection[slot]
-		local value = entry and entry.name or config.Slots[slot] or autoPicks[slot]
-		table.insert(lines, ("%s = %s"):format(slot, value and ('"' .. value .. '"') or "nil"))
+		selection[slot] = nil
+		applySlot(slot)
+		refreshSlot(slot)
 	end
-	print(table.concat(lines, "\n"))
-	status.Text = "Printed to Output (View -> Output). Copy it and send it to Claude."
+	status.Text = "All slots back to automatic."
+	save()
 end)
 
 -- Build list ------------------------------------------------------------------

@@ -41,6 +41,16 @@ else
 	warn("[Animate] Animations pack not found - using no custom animations")
 end
 
+-- picks saved from the previewer
+local savedPicks = {}
+do
+	local saved = ReplicatedStorage:WaitForChild("SavedAnimPicks", 10)
+	local ok, data = pcall(game:GetService("HttpService").JSONDecode, game:GetService("HttpService"), saved and saved.Value or "{}")
+	if ok and type(data) == "table" then
+		savedPicks = data
+	end
+end
+
 -- slots not set in the config are filled from the animation names
 local autoPicks = {}
 do
@@ -52,7 +62,7 @@ do
 	autoPicks = require(ReplicatedStorage.Shared:WaitForChild("AutoPick"))(paths)
 	local lines = { "[Animate] Animations on your character:" }
 	for _, slot in config.Order do
-		local value = config.Slots[slot] or autoPicks[slot]
+		local value = savedPicks[slot] or config.Slots[slot] or autoPicks[slot]
 		table.insert(lines, ("  %s = %s"):format(slot, value or "(none - uses the forward/default one)"))
 	end
 	print(table.concat(lines, "\n"))
@@ -110,10 +120,14 @@ local PRIORITY = { Jump = Enum.AnimationPriority.Action, Land = Enum.AnimationPr
 
 local tracks = {}
 
--- previewer picks (player attributes "Anim_<slot>") win over the config file,
--- which wins over the automatic picks
+-- live previewer picks (player attributes "Anim_<slot>") win, then saved
+-- picks, then the config file, then the automatic picks
 local function slotValue(slot)
-	return player:GetAttribute("Anim_" .. slot) or config.Slots[slot] or autoPicks[slot]
+	local live = player:GetAttribute("Anim_" .. slot)
+	if live == "" then
+		return config.Slots[slot] or autoPicks[slot]
+	end
+	return live or savedPicks[slot] or config.Slots[slot] or autoPicks[slot]
 end
 
 local function loadSlot(slot)
