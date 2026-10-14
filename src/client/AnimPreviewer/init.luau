@@ -39,7 +39,11 @@ local function collectAnimations()
 				end
 				node = node.Parent
 			end
-			table.insert(anims, { name = table.concat(parts, "/"), anim = anim })
+			table.insert(anims, {
+				name = table.concat(parts, "/"),
+				anim = anim,
+				rig = inst:FindFirstAncestorOfClass("Model"),
+			})
 		end
 	end
 	table.sort(anims, function(a, b) return a.name:lower() < b.name:lower() end)
@@ -71,7 +75,7 @@ title.Parent = frame
 
 local status = Instance.new("TextLabel")
 status.Size = UDim2.new(1, -16, 0, 36)
-status.Position = UDim2.fromOffset(8, 32)
+status.Position = UDim2.fromOffset(8, 30)
 status.BackgroundTransparency = 1
 status.Font = Enum.Font.Gotham
 status.TextSize = 12
@@ -105,39 +109,81 @@ layout.Padding = UDim.new(0, 4)
 layout.Parent = list
 
 -- Playback -------------------------------------------------------------
-local currentTrack
+local currentTracks = {}
+local previewRig
 
 local function stop()
-	if currentTrack then
-		currentTrack:Stop(0.2)
-		currentTrack = nil
+	for _, track in currentTracks do
+		track:Stop(0.2)
+	end
+	currentTracks = {}
+	if previewRig then
+		previewRig:Destroy()
+		previewRig = nil
 	end
 end
 
-local function play(entry)
-	stop()
-	local character = player.Character
-	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
-	if not humanoid then
-		status.Text = "No character yet - press Play first."
-		return
+local function getAnimator(model)
+	local controller = model:FindFirstChildOfClass("Humanoid") or model:FindFirstChildOfClass("AnimationController")
+	if not controller then
+		return nil
 	end
-	local animator = humanoid:FindFirstChildOfClass("Animator") or Instance.new("Animator", humanoid)
+	return controller:FindFirstChildOfClass("Animator") or Instance.new("Animator", controller)
+end
+
+local function playOn(model, entry)
+	local animator = model and getAnimator(model)
+	if not animator then
+		return nil
+	end
 	local ok, track = pcall(animator.LoadAnimation, animator, entry.anim)
 	if not ok then
-		status.Text = "Couldn't load " .. entry.name .. ": " .. tostring(track)
-		return
+		warn("[AnimPreviewer] Couldn't load", entry.name, track)
+		return nil
 	end
 	track.Priority = Enum.AnimationPriority.Action4
 	track.Looped = true
 	track:Play(0.2)
-	currentTrack = track
-	status.Text = "Playing: " .. entry.name
-	task.delay(1, function()
-		if currentTrack == track and track.Length == 0 then
-			status.Text = entry.name .. " didn't load - you may not own it, or it's for a different rig (R6/R15)."
+	table.insert(currentTracks, track)
+	return track
+end
+
+-- Puts a copy of the pack's own rig in front of you, so the animation is
+-- always shown on the body it was made for.
+local function spawnPreviewRig(rig)
+	local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+	if not rig or not root then
+		return nil
+	end
+	local clone = rig:Clone()
+	for _, inst in clone:GetDescendants() do
+		if inst.Name == "AnimSaves" or inst:IsA("Script") or inst:IsA("LocalScript") then
+			inst:Destroy()
+		elseif inst:IsA("BasePart") then
+			inst.CanCollide = false
 		end
-	end)
+	end
+	local rigRoot = clone:FindFirstChild("HumanoidRootPart") or clone.PrimaryPart
+	if rigRoot then
+		rigRoot.Anchored = true
+		clone.PrimaryPart = rigRoot
+		local spot = root.CFrame * CFrame.new(0, 0, -8)
+		clone:PivotTo(CFrame.lookAt(spot.Position, root.Position * Vector3.new(1, 0, 1) + Vector3.new(0, spot.Position.Y, 0)))
+	end
+	clone.Parent = workspace
+	return clone
+end
+
+local function play(entry)
+	stop()
+	previewRig = spawnPreviewRig(entry.rig)
+	local rigTrack = playOn(previewRig, entry)
+	local charTrack = playOn(player.Character, entry)
+	if not rigTrack and not charTrack then
+		status.Text = "Couldn't play " .. entry.name .. " - check Output."
+		return
+	end
+	status.Text = "Playing: " .. entry.name .. "\n(on the dummy in front of you + your character)"
 end
 
 stopButton.MouseButton1Click:Connect(function()
