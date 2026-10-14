@@ -10,6 +10,7 @@ local player = Players.LocalPlayer
 
 local config = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("AnimConfig"))
 local SLOTS = config.Order
+local autoPicks = {} -- filled once the animation list is loaded
 
 local selection = {} -- slot name -> entry
 
@@ -256,7 +257,7 @@ end
 
 local function refreshSlot(slot)
 	local entry = selection[slot]
-	local current = entry and entry.name or config.Slots[slot]
+	local current = entry and entry.name or config.Slots[slot] or autoPicks[slot]
 	local b = slotButtons[slot]
 	b.Text = ("  %s: %s"):format(slot, current or "—")
 	b.BackgroundColor3 = entry and Color3.fromRGB(40, 90, 150) or Color3.fromRGB(50, 50, 60)
@@ -297,7 +298,7 @@ printButton.MouseButton1Click:Connect(function()
 	local lines = { "[AnimPreviewer] Selection - copy this to Claude:" }
 	for _, slot in SLOTS do
 		local entry = selection[slot]
-		local value = entry and entry.name or config.Slots[slot]
+		local value = entry and entry.name or config.Slots[slot] or autoPicks[slot]
 		table.insert(lines, ("%s = %s"):format(slot, value and ('"' .. value .. '"') or "nil"))
 	end
 	print(table.concat(lines, "\n"))
@@ -306,6 +307,16 @@ end)
 
 -- Build list ------------------------------------------------------------------
 local anims = collectAnimations()
+do
+	local paths = {}
+	for _, entry in anims do
+		table.insert(paths, entry.name)
+	end
+	autoPicks = require(ReplicatedStorage.Shared:WaitForChild("AutoPick"))(paths)
+	for _, slot in SLOTS do
+		refreshSlot(slot)
+	end
+end
 title.Text = ("Animations (%d)"):format(#anims)
 if #anims == 0 then
 	status.Text = "No animations found. Check Output for [AnimPreviewer] messages."

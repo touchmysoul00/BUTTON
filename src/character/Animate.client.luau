@@ -41,6 +41,23 @@ else
 	warn("[Animate] Animations pack not found - using no custom animations")
 end
 
+-- slots not set in the config are filled from the animation names
+local autoPicks = {}
+do
+	local paths = {}
+	for path in byPath do
+		table.insert(paths, path)
+	end
+	table.sort(paths)
+	autoPicks = require(ReplicatedStorage.Shared:WaitForChild("AutoPick"))(paths)
+	local lines = { "[Animate] Animations on your character:" }
+	for _, slot in config.Order do
+		local value = config.Slots[slot] or autoPicks[slot]
+		table.insert(lines, ("  %s = %s"):format(slot, value or "(none - uses the forward/default one)"))
+	end
+	print(table.concat(lines, "\n"))
+end
+
 local function findInPack(value)
 	if byPath[value] then
 		return byPath[value]
@@ -93,9 +110,10 @@ local PRIORITY = { Jump = Enum.AnimationPriority.Action, Land = Enum.AnimationPr
 
 local tracks = {}
 
--- previewer picks (player attributes "Anim_<slot>") win over the config file
+-- previewer picks (player attributes "Anim_<slot>") win over the config file,
+-- which wins over the automatic picks
 local function slotValue(slot)
-	return player:GetAttribute("Anim_" .. slot) or config.Slots[slot]
+	return player:GetAttribute("Anim_" .. slot) or config.Slots[slot] or autoPicks[slot]
 end
 
 local function loadSlot(slot)
