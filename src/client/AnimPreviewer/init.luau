@@ -167,4 +167,4 @@ for _, entry in anims do
 	end)
 end
 
-return nil
+return {}
