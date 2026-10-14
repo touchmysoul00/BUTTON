@@ -23,6 +23,12 @@ local LABELS = {
 	CrouchWalkLeft = "Crouch walk left", CrouchWalkRight = "Crouch walk right",
 	Slide = "Slide (C while running)",
 }
+for _, group in { { "Walk", "Walk" }, { "Run", "Run" }, { "CrouchWalk", "Crouch walk" } } do
+	LABELS[group[1] .. "ForwardLeft"] = group[2] .. " W+A"
+	LABELS[group[1] .. "ForwardRight"] = group[2] .. " W+D"
+	LABELS[group[1] .. "BackLeft"] = group[2] .. " S+A"
+	LABELS[group[1] .. "BackRight"] = group[2] .. " S+D"
+end
 
 -- if a ticked animation's name doesn't say what it is, its folder decides
 local FOLDER_MOVES = {

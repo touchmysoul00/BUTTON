@@ -240,29 +240,41 @@ end)
 
 -- Playing -------------------------------------------------------------------
 -- Exactly one looping track plays at a time (blending two walk cycles makes
--- the legs scissor). Walk/Run/CrouchWalk pick the Back/Left/Right version
--- for the direction you're mostly moving in.
+-- the legs scissor). Walk/Run/CrouchWalk pick the version for the direction
+-- you're moving in: W, S, A, D, W+A, W+D, S+A or S+D.
 local currentTrack
 local currentDir = ""
 
+-- 8 directions around the character, clockwise from forward (W)
+local SECTORS = { "", "ForwardRight", "Right", "BackRight", "Back", "BackLeft", "Left", "ForwardLeft" }
+local SECTOR_OF = {}
+for i, dir in SECTORS do
+	SECTOR_OF[dir] = i
+end
+
 -- direction you're moving relative to where the character faces, with a
--- little stickiness so it doesn't flicker around 45 degrees
+-- little stickiness so it doesn't flicker between two directions
 local function moveDirection()
 	local velocity = root.AssemblyLinearVelocity * Vector3.new(1, 0, 1)
 	if velocity.Magnitude < 0.5 then
 		return currentDir
 	end
 	local d = root.CFrame:VectorToObjectSpace(velocity.Unit)
-	local scores = { [""] = -d.Z, Back = d.Z, Left = -d.X, Right = d.X }
-	local best, bestScore = currentDir, (scores[currentDir] or 0) + 0.15
-	for dir, score in scores do
-		if score > bestScore then
-			best, bestScore = dir, score
-		end
+	local angle = math.deg(math.atan2(d.X, -d.Z)) % 360 -- 0 = forward, 90 = right
+	local currentCenter = (SECTOR_OF[currentDir] - 1) * 45
+	local offset = math.abs((angle - currentCenter + 180) % 360 - 180)
+	if offset > 22.5 + 8 then
+		currentDir = SECTORS[math.floor((angle + 22.5) / 45) % 8 + 1]
 	end
-	currentDir = best
-	return best
+	return currentDir
 end
+
+-- what to use when a direction has no animation of its own
+local FALLBACKS = {
+	ForwardLeft = { "Left", "" }, ForwardRight = { "Right", "" },
+	BackLeft = { "Back", "Left" }, BackRight = { "Back", "Right" },
+	Left = { "" }, Right = { "" }, Back = {},
+}
 
 -- the track for a movement; returns track, speed sign (-1 = play reversed)
 local function pickTrack(group)
@@ -270,15 +282,21 @@ local function pickTrack(group)
 		return tracks[group], 1
 	end
 	local dir = moveDirection()
-	if tracks[group .. dir] then
-		return tracks[group .. dir], 1
+	local candidates = { dir }
+	for _, other in FALLBACKS[dir] or {} do
+		table.insert(candidates, other)
 	end
-	-- running without its own direction animation: use the walking one
-	if group == "Run" and tracks["Walk" .. dir] and dir ~= "" then
-		return tracks["Walk" .. dir], 1
+	for _, option in candidates do
+		if tracks[group .. option] then
+			return tracks[group .. option], 1
+		end
+		-- running without its own animation for this direction: the walking one
+		if group == "Run" and option ~= "" and tracks["Walk" .. option] then
+			return tracks["Walk" .. option], 1
+		end
 	end
-	-- backward without an animation: the forward one played in reverse
-	if dir == "Back" then
+	-- backward without any animation: the forward one played in reverse
+	if dir:sub(1, 4) == "Back" then
 		return tracks[group], -1
 	end
 	return tracks[group], 1
@@ -393,7 +411,8 @@ local function step()
 	local swimming = state == Enum.HumanoidStateType.Swimming
 
 	-- no sprinting backwards unless there's a run-backward animation
-	local canSprint = sprinting and (currentDir ~= "Back" or tracks.RunBack ~= nil)
+	local backwards = currentDir:sub(1, 4) == "Back"
+	local canSprint = sprinting and (not backwards or tracks["Run" .. currentDir] ~= nil)
 	humanoid.WalkSpeed = (sliding or crouching) and CROUCH_SPEED or (canSprint and RUN_SPEED or WALK_SPEED)
 
 	local inAir = state == Enum.HumanoidStateType.Freefall or state == Enum.HumanoidStateType.Jumping

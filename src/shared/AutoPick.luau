@@ -2,8 +2,6 @@
 -- e.g. "Walks/Walk Back" -> WalkBack, "Crouch/Prone/Crouch_Walk_Left" -> CrouchWalkLeft.
 -- Takes a list of pack paths and returns { [slot] = path }.
 
-local DIRECTION_WORDS = { "back", "left", "right", "forward", "front" }
-
 -- split "Walks/Walk_Back Left" into lowercase words
 local function words(path)
 	local list = {}
@@ -23,23 +21,21 @@ local function hasAny(w, list)
 	return false
 end
 
--- which way an animation moves: "", "Back", "Left", "Right", or nil for
--- diagonals like "forward left" that don't fit one slot
+-- which way an animation moves: "", "Back", "Left", "Right", "ForwardLeft",
+-- "ForwardRight", "BackLeft", "BackRight" (nil if it makes no sense)
 local function direction(w)
 	local back = w.back or w.backward or w.backwards
 	local left, right = w.left, w.right
 	local forward = w.forward or w.forwards or w.front
-	local count = (back and 1 or 0) + (left and 1 or 0) + (right and 1 or 0) + (forward and 1 or 0)
-	if count > 1 then
+	if (back and forward) or (left and right) then
 		return nil
-	elseif back then
-		return "Back"
-	elseif left then
-		return "Left"
-	elseif right then
-		return "Right"
 	end
-	return ""
+	local vertical = back and "Back" or (forward and "Forward" or "")
+	local side = left and "Left" or (right and "Right" or "")
+	if vertical == "Forward" and side == "" then
+		return ""
+	end
+	return vertical .. side
 end
 
 -- transitions like "Crouch_Walk_Start" or "Idle to Climb" aren't loops
@@ -57,7 +53,7 @@ local RULES = {
 	Slide = { has = { "slide", "sliding" } },
 }
 for _, group in { "Walk", "Run", "CrouchWalk" } do
-	for _, dir in { "", "Back", "Left", "Right" } do
+	for _, dir in { "", "Back", "Left", "Right", "ForwardLeft", "ForwardRight", "BackLeft", "BackRight" } do
 		RULES[group .. dir] = { group = group, dir = dir }
 	end
 end
