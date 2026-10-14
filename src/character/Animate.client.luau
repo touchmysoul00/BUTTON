@@ -367,7 +367,9 @@ RunService.Heartbeat:Connect(function()
 	local climbing = state == Enum.HumanoidStateType.Climbing
 	local swimming = state == Enum.HumanoidStateType.Swimming
 
-	humanoid.WalkSpeed = (sliding or crouching) and CROUCH_SPEED or (sprinting and RUN_SPEED or WALK_SPEED)
+	-- no sprinting backwards unless there's a run-backward animation
+	local canSprint = sprinting and (currentDir ~= "Back" or tracks.RunBack ~= nil)
+	humanoid.WalkSpeed = (sliding or crouching) and CROUCH_SPEED or (canSprint and RUN_SPEED or WALK_SPEED)
 
 	local inAir = state == Enum.HumanoidStateType.Freefall or state == Enum.HumanoidStateType.Jumping
 	if inAir then
@@ -394,7 +396,7 @@ RunService.Heartbeat:Connect(function()
 	elseif crouching and tracks.Crouch then
 		setGroup((horizontal > 0.5 and tracks.CrouchWalk) and "CrouchWalk" or "Crouch", horizontal > 0.5 and horizontal / CROUCH_SPEED or 1)
 	elseif horizontal > 0.5 then
-		if sprinting and tracks.Run then
+		if canSprint and tracks.Run then
 			setGroup("Run", horizontal / RUN_SPEED)
 		else
 			setGroup(tracks.Walk and "Walk" or "Run", horizontal / WALK_SPEED)
