@@ -113,6 +113,18 @@ local function toAnimation(value)
 	return anim
 end
 
+-- Roblox's standard R6 animations, used when a move has no working pick so
+-- the character never just slides around
+local ROBLOX_DEFAULTS = {
+	Idle = "rbxassetid://180435571",
+	Walk = "rbxassetid://180426354",
+	Run = "rbxassetid://180426354",
+	Jump = "rbxassetid://125750702",
+	Fall = "rbxassetid://180436148",
+	Climb = "rbxassetid://180436334",
+	Swim = "rbxassetid://180426354",
+}
+
 local ONE_SHOT = { Jump = true, Land = true }
 local PRIORITY = { Jump = Enum.AnimationPriority.Action, Land = Enum.AnimationPriority.Action,
 	Slide = Enum.AnimationPriority.Movement }
@@ -130,6 +142,20 @@ local function slotValue(slot)
 	return live or savedPicks[slot] or config.Slots[slot] or autoPicks[slot]
 end
 
+local function loadTrack(slot, value)
+	local anim, err = toAnimation(value)
+	if not anim then
+		return nil, err
+	end
+	local ok, track = pcall(animator.LoadAnimation, animator, anim)
+	if not ok then
+		return nil, track
+	end
+	track.Looped = not ONE_SHOT[slot]
+	track.Priority = PRIORITY[slot] or Enum.AnimationPriority.Core
+	return track
+end
+
 local function loadSlot(slot)
 	if tracks[slot] then
 		tracks[slot]:Stop(0)
@@ -137,24 +163,18 @@ local function loadSlot(slot)
 	end
 	problems[slot] = nil
 	local value = slotValue(slot)
-	if not value or value == "" then
-		return
-	end
-	local anim, err = toAnimation(value)
-	if not anim then
-		warn(("[Animate] %s: %s"):format(slot, err))
+	if value and value ~= "" then
+		local track, err = loadTrack(slot, value)
+		if track then
+			tracks[slot] = track
+			return
+		end
+		warn(("[Animate] %s: %s"):format(slot, tostring(err)))
 		problems[slot] = tostring(err)
-		return
 	end
-	local ok, track = pcall(animator.LoadAnimation, animator, anim)
-	if not ok then
-		warn("[Animate] Couldn't load", slot, track)
-		problems[slot] = tostring(track)
-		return
+	if ROBLOX_DEFAULTS[slot] then
+		tracks[slot] = loadTrack(slot, ROBLOX_DEFAULTS[slot])
 	end
-	track.Looped = not ONE_SHOT[slot]
-	track.Priority = PRIORITY[slot] or Enum.AnimationPriority.Core
-	tracks[slot] = track
 end
 
 local currentGroup
@@ -179,6 +199,8 @@ if RunService:IsStudio() then
 	gui.Parent = player:WaitForChild("PlayerGui")
 end
 
+local lastError -- set by the main loop if it crashes
+
 local function updateStatus()
 	if not statusLabel then
 		return
@@ -193,7 +215,9 @@ local function updateStatus()
 	end
 	local text = ("Body: %s  |  %d animations on your character  |  playing: %s"):format(
 		humanoid.RigType.Name, loaded, currentGroup or "-")
-	if not pack then
+	if lastError then
+		text ..= "  |  ERROR " .. tostring(lastError)
+	elseif not pack then
 		text ..= "  |  Animations folder NOT found"
 	elseif #broken > 0 then
 		text ..= "  |  PROBLEM " .. broken[1]
@@ -354,13 +378,14 @@ if config.Strafe then
 			root.CFrame = CFrame.lookAt(root.Position, root.Position + look)
 		end
 	end)
-	humanoid.Died:Connect(function()
+	local function unbind()
 		RunService:UnbindFromRenderStep("AnimateStrafe")
-	end)
+	end
+	humanoid.Died:Connect(unbind)
+	script.Destroying:Connect(unbind)
 end
 
-RunService.Heartbeat:Connect(function()
-	updateStatus()
+local function step()
 	local state = humanoid:GetState()
 	local horizontal = (root.AssemblyLinearVelocity * Vector3.new(1, 0, 1)).Magnitude
 	local sliding = os.clock() < slideUntil
@@ -404,4 +429,13 @@ RunService.Heartbeat:Connect(function()
 	else
 		setGroup("Idle")
 	end
+end
+
+RunService.Heartbeat:Connect(function()
+	local ok, err = pcall(step)
+	if not ok and err ~= lastError then
+		lastError = err
+		warn("[Animate] ERROR:", err)
+	end
+	updateStatus()
 end)
