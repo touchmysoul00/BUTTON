@@ -63,18 +63,24 @@ if okStore then
 	end
 end
 
-saveRemote.OnServerInvoke = function(_, picks)
+-- data = { Picks = { [move] = path }, Selected = { path, ... } }
+saveRemote.OnServerInvoke = function(_, data)
 	-- only the developer in Studio may change the game's animations
 	if not RunService:IsStudio() then
 		return false, "Saving only works in Studio"
 	end
-	if type(picks) ~= "table" then
+	if type(data) ~= "table" or type(data.Picks) ~= "table" or type(data.Selected) ~= "table" then
 		return false, "Bad data"
 	end
-	local clean = {}
-	for slot, path in picks do
+	local clean = { Picks = {}, Selected = {} }
+	for slot, path in data.Picks do
 		if type(slot) == "string" and type(path) == "string" then
-			clean[slot] = path
+			clean.Picks[slot] = path
+		end
+	end
+	for _, path in data.Selected do
+		if type(path) == "string" then
+			table.insert(clean.Selected, path)
 		end
 	end
 	savedValue.Value = HttpService:JSONEncode(clean)

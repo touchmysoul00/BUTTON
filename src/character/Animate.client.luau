@@ -46,8 +46,8 @@ local savedPicks = {}
 do
 	local saved = ReplicatedStorage:WaitForChild("SavedAnimPicks", 10)
 	local ok, data = pcall(game:GetService("HttpService").JSONDecode, game:GetService("HttpService"), saved and saved.Value or "{}")
-	if ok and type(data) == "table" then
-		savedPicks = data
+	if ok and type(data) == "table" and type(data.Picks) == "table" then
+		savedPicks = data.Picks
 	end
 end
 
