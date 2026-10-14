@@ -1,6 +1,7 @@
 -- Replaces Roblox's default R6 Animate script with the animations picked in
--- ReplicatedStorage.Shared.AnimConfig.
+-- ReplicatedStorage.Shared.AnimConfig (or live in the previewer).
 -- Controls: Shift = sprint, C / Left Ctrl = crouch, C while sprinting = slide.
+local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
@@ -10,7 +11,9 @@ local WALK_SPEED = 16
 local RUN_SPEED = 26
 local CROUCH_SPEED = 8
 local SLIDE_TIME = 0.8
+local DIRECTIONS = { "", "Back", "Left", "Right" }
 
+local player = Players.LocalPlayer
 local character = script.Parent
 local humanoid = character:WaitForChild("Humanoid")
 local root = character:WaitForChild("HumanoidRootPart")
@@ -57,73 +60,142 @@ local function findInPack(value)
 	return matches[1] and byPath[matches[1]]
 end
 
-local function loadSlot(slot)
-	local value = config[slot]
-	if not value then
-		return nil
-	end
-	local anim
+local registered = {} -- KeyframeSequence -> temporary ID
+
+local function toAnimation(value)
+	local anim = Instance.new("Animation")
 	if value:match("^rbxassetid://") then
-		anim = Instance.new("Animation")
 		anim.AnimationId = value
-	else
-		local inst = findInPack(value)
-		if not inst then
-			warn(("[Animate] %s: no animation matches %q"):format(slot, value))
-			return nil
-		end
-		if inst:IsA("Animation") then
-			anim = inst
-		else
-			-- raw KeyframeSequence: temporary ID, only works in Studio playtests
-			local ok, id = pcall(KeyframeSequenceProvider.RegisterKeyframeSequence, KeyframeSequenceProvider, inst)
-			if not ok then
-				warn("[Animate] Couldn't register", slot, id)
-				return nil
-			end
-			anim = Instance.new("Animation")
-			anim.AnimationId = id
-		end
+		return anim
 	end
-	local ok, track = pcall(animator.LoadAnimation, animator, anim)
-	if not ok then
-		warn("[Animate] Couldn't load", slot, track)
-		return nil
+	local inst = findInPack(value)
+	if not inst then
+		return nil, ("no animation matches %q"):format(value)
 	end
-	return track
+	if inst:IsA("Animation") then
+		return inst
+	end
+	-- raw KeyframeSequence: temporary ID, only works in Studio playtests
+	if not registered[inst] then
+		local ok, id = pcall(KeyframeSequenceProvider.RegisterKeyframeSequence, KeyframeSequenceProvider, inst)
+		if not ok then
+			return nil, id
+		end
+		registered[inst] = id
+	end
+	anim.AnimationId = registered[inst]
+	return anim
 end
 
-local LOOPED = { Idle = true, Walk = true, Run = true, Fall = true, Climb = true, ClimbIdle = true,
-	Swim = true, Crouch = true, CrouchWalk = true, Slide = true }
+local ONE_SHOT = { Jump = true, Land = true }
 local PRIORITY = { Jump = Enum.AnimationPriority.Action, Land = Enum.AnimationPriority.Action,
 	Slide = Enum.AnimationPriority.Movement }
 
 local tracks = {}
-for slot in config do
-	local track = loadSlot(slot)
-	if track then
-		track.Looped = LOOPED[slot] == true
-		track.Priority = PRIORITY[slot] or Enum.AnimationPriority.Core
-		tracks[slot] = track
+
+-- previewer picks (player attributes "Anim_<slot>") win over the config file
+local function slotValue(slot)
+	return player:GetAttribute("Anim_" .. slot) or config.Slots[slot]
+end
+
+local function loadSlot(slot)
+	if tracks[slot] then
+		tracks[slot]:Stop(0)
+		tracks[slot] = nil
+	end
+	local value = slotValue(slot)
+	if not value or value == "" then
+		return
+	end
+	local anim, err = toAnimation(value)
+	if not anim then
+		warn(("[Animate] %s: %s"):format(slot, err))
+		return
+	end
+	local ok, track = pcall(animator.LoadAnimation, animator, anim)
+	if not ok then
+		warn("[Animate] Couldn't load", slot, track)
+		return
+	end
+	track.Looped = not ONE_SHOT[slot]
+	track.Priority = PRIORITY[slot] or Enum.AnimationPriority.Core
+	tracks[slot] = track
+end
+
+local currentGroup
+
+for _, slot in config.Order do
+	loadSlot(slot)
+end
+player.AttributeChanged:Connect(function(attribute)
+	local slot = attribute:match("^Anim_(.+)$")
+	if slot then
+		loadSlot(slot)
+		currentGroup = nil -- restart whatever is playing with the new track
+	end
+end)
+
+-- Playing -------------------------------------------------------------------
+-- A "group" is a looping movement (Walk, Run, Idle, ...). Walk/Run/CrouchWalk
+-- also have Back/Left/Right slots, blended by which way you're moving.
+local function groupTracks(group)
+	local list = {}
+	for _, dir in DIRECTIONS do
+		local track = tracks[group .. dir]
+		if track then
+			list[dir] = track
+		end
+	end
+	return list
+end
+
+local function directionWeights(group)
+	local list = groupTracks(group)
+	local velocity = root.AssemblyLinearVelocity * Vector3.new(1, 0, 1)
+	local weights = { [""] = 1, Back = 0, Left = 0, Right = 0 }
+	if velocity.Magnitude > 0.5 and (list.Back or list.Left or list.Right) then
+		local localDir = root.CFrame:VectorToObjectSpace(velocity.Unit)
+		weights = {
+			[""] = math.max(0, -localDir.Z),
+			Back = math.max(0, localDir.Z),
+			Left = math.max(0, -localDir.X),
+			Right = math.max(0, localDir.X),
+		}
+		-- directions without their own animation use the forward one
+		for _, dir in { "Back", "Left", "Right" } do
+			if not list[dir] then
+				weights[""] += weights[dir]
+				weights[dir] = 0
+			end
+		end
+	end
+	return list, weights
+end
+
+local function stopGroup(group)
+	for _, track in groupTracks(group) do
+		track:Stop(0.15)
 	end
 end
 
--- Playing -------------------------------------------------------------------
-local currentSlot
-
--- one looping "base" animation at a time (idle, walk, run, fall, ...)
-local function setBase(slot, speed)
-	if not tracks[slot] then
+local function setGroup(group, speed)
+	local list, weights = directionWeights(group)
+	if not next(list) then
 		return
 	end
-	if currentSlot ~= slot then
-		if currentSlot and tracks[currentSlot] then
-			tracks[currentSlot]:Stop(0.15)
+	if currentGroup ~= group then
+		if currentGroup then
+			stopGroup(currentGroup)
 		end
-		currentSlot = slot
-		tracks[slot]:Play(0.15)
+		currentGroup = group
+		for _, track in list do
+			track:Play(0.15, 0.001)
+		end
 	end
-	tracks[slot]:AdjustSpeed(speed or 1)
+	for dir, track in list do
+		track:AdjustWeight(math.max(weights[dir] or 0, 0.001), 0.15)
+		track:AdjustSpeed(speed or 1)
+	end
 end
 
 local function playOnce(slot)
@@ -171,35 +243,49 @@ humanoid.StateChanged:Connect(function(_, new)
 	end
 end)
 
+if config.Strafe then
+	humanoid.AutoRotate = false
+end
+
 RunService.Heartbeat:Connect(function()
 	local state = humanoid:GetState()
 	local horizontal = (root.AssemblyLinearVelocity * Vector3.new(1, 0, 1)).Magnitude
 	local sliding = os.clock() < slideUntil
+	local climbing = state == Enum.HumanoidStateType.Climbing
+	local swimming = state == Enum.HumanoidStateType.Swimming
 
 	humanoid.WalkSpeed = (sliding or crouching) and CROUCH_SPEED or (sprinting and RUN_SPEED or WALK_SPEED)
 
-	if state == Enum.HumanoidStateType.Climbing then
+	-- strafe: keep facing where the camera looks
+	if config.Strafe and not climbing and not swimming and not sliding then
+		local look = workspace.CurrentCamera.CFrame.LookVector * Vector3.new(1, 0, 1)
+		if look.Magnitude > 0.01 then
+			root.CFrame = CFrame.lookAt(root.Position, root.Position + look)
+		end
+	end
+
+	if climbing then
 		local climbSpeed = math.abs(root.AssemblyLinearVelocity.Y)
 		if climbSpeed < 0.5 and tracks.ClimbIdle then
-			setBase("ClimbIdle")
+			setGroup("ClimbIdle")
 		else
-			setBase("Climb", math.max(climbSpeed / 8, 0.1))
+			setGroup("Climb", math.max(climbSpeed / 8, 0.1))
 		end
-	elseif state == Enum.HumanoidStateType.Swimming then
-		setBase(tracks.Swim and "Swim" or "Idle")
+	elseif swimming then
+		setGroup(tracks.Swim and "Swim" or "Idle")
 	elseif state == Enum.HumanoidStateType.Freefall or state == Enum.HumanoidStateType.Jumping then
-		setBase("Fall")
+		setGroup("Fall")
 	elseif sliding and tracks.Slide then
-		setBase("Slide")
+		setGroup("Slide")
 	elseif crouching and tracks.Crouch then
-		setBase((horizontal > 0.5 and tracks.CrouchWalk) and "CrouchWalk" or "Crouch")
+		setGroup((horizontal > 0.5 and tracks.CrouchWalk) and "CrouchWalk" or "Crouch", horizontal > 0.5 and horizontal / CROUCH_SPEED or 1)
 	elseif horizontal > 0.5 then
 		if sprinting and tracks.Run then
-			setBase("Run")
+			setGroup("Run")
 		else
-			setBase(tracks.Walk and "Walk" or "Run", horizontal / WALK_SPEED)
+			setGroup(tracks.Walk and "Walk" or "Run", horizontal / WALK_SPEED)
 		end
 	else
-		setBase("Idle")
+		setGroup("Idle")
 	end
 end)

@@ -1,30 +1,15 @@
 -- Animation previewer + selector.
 -- Click an animation to preview it in the preview window (on the pack's
--- own dummy), then click a slot to apply it. Standard slots are applied to your R6
--- character's Animate script live. "Print selection" writes the picks to
--- Output so they can be copied into the final pack.
+-- own dummy), then click a slot to apply it to your character live.
+-- "Print selection" writes the picks to Output so they can go into AnimConfig.
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local KeyframeSequenceProvider = game:GetService("KeyframeSequenceProvider")
 
 local player = Players.LocalPlayer
 
--- slot name -> the Animate script value it maps to (nil = custom, scripted later)
-local SLOTS = {
-	{ name = "Idle", animate = "idle" },
-	{ name = "Walk", animate = "walk" },
-	{ name = "Run", animate = "run" },
-	{ name = "Jump", animate = "jump" },
-	{ name = "Fall", animate = "fall" },
-	{ name = "Climb", animate = "climb" },
-	{ name = "Swim" },
-	{ name = "Crouch" },
-	{ name = "CrouchWalk" },
-	{ name = "Prone" },
-	{ name = "Slide" },
-	{ name = "Land" },
-	{ name = "Wallrun" },
-}
+local config = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("AnimConfig"))
+local SLOTS = config.Order
 
 local selection = {} -- slot name -> entry
 
@@ -260,42 +245,20 @@ local function play(entry)
 	status.Text = "Previewing " .. entry.name .. ". Like it? Click a slot on the right to apply it."
 end
 
--- Applying to the character -------------------------------------------------
--- Points the R6 Animate script's values at the selected animations.
-local function applyToCharacter()
-	local character = player.Character
-	local animate = character and character:FindFirstChild("Animate")
-	if not animate then
-		return
-	end
-	for _, slot in SLOTS do
-		local entry = selection[slot.name]
-		local value = slot.animate and animate:FindFirstChild(slot.animate)
-		if entry and value then
-			for _, anim in value:GetChildren() do
-				if anim:IsA("Animation") then
-					anim.AnimationId = entry.anim.AnimationId
-				end
-			end
-		end
-	end
-	-- restart Animate so it reloads the new IDs
-	animate.Disabled = true
-	animate.Disabled = false
-end
-
-player.CharacterAdded:Connect(function(character)
-	character:WaitForChild("Animate")
-	applyToCharacter()
-end)
-
 -- Slots ---------------------------------------------------------------------
 local slotButtons = {}
 
+-- Animate script picks these up live (player attributes "Anim_<slot>")
+local function applySlot(slot)
+	local entry = selection[slot]
+	player:SetAttribute("Anim_" .. slot, entry and entry.name or nil)
+end
+
 local function refreshSlot(slot)
-	local entry = selection[slot.name]
-	local b = slotButtons[slot.name]
-	b.Text = ("  %s: %s"):format(slot.name, entry and entry.name or "—")
+	local entry = selection[slot]
+	local current = entry and entry.name or config.Slots[slot]
+	local b = slotButtons[slot]
+	b.Text = ("  %s: %s"):format(slot, current or "—")
 	b.BackgroundColor3 = entry and Color3.fromRGB(40, 90, 150) or Color3.fromRGB(50, 50, 60)
 end
 
@@ -305,23 +268,22 @@ for i, slot in SLOTS do
 	b.LayoutOrder = i
 	b.TextXAlignment = Enum.TextXAlignment.Left
 	b.TextTruncate = Enum.TextTruncate.AtEnd
-	slotButtons[slot.name] = b
+	slotButtons[slot] = b
 	refreshSlot(slot)
 	b.MouseButton1Click:Connect(function()
 		if not current then
 			status.Text = "Click an animation on the left first, then a slot."
 			return
 		end
-		if selection[slot.name] == current then
-			selection[slot.name] = nil -- click again to clear
-			status.Text = "Cleared " .. slot.name .. "."
+		if selection[slot] == current then
+			selection[slot] = nil -- click again to undo
+			status.Text = "Reset " .. slot .. " to the default."
 		else
-			selection[slot.name] = current
-			status.Text = ("Assigned %s -> %s%s"):format(current.name, slot.name,
-				slot.animate and " (applied to your character - walk around to see it)" or " (custom slot, scripted in the final pack)")
+			selection[slot] = current
+			status.Text = ("%s -> %s. Applied to your character - close this with P and move to try it."):format(current.name, slot)
 		end
 		refreshSlot(slot)
-		applyToCharacter()
+		applySlot(slot)
 	end)
 end
 
@@ -334,8 +296,9 @@ end)
 printButton.MouseButton1Click:Connect(function()
 	local lines = { "[AnimPreviewer] Selection - copy this to Claude:" }
 	for _, slot in SLOTS do
-		local entry = selection[slot.name]
-		table.insert(lines, ("%s = %s"):format(slot.name, entry and entry.name or "(none)"))
+		local entry = selection[slot]
+		local value = entry and entry.name or config.Slots[slot]
+		table.insert(lines, ("%s = %s"):format(slot, value and ('"' .. value .. '"') or "nil"))
 	end
 	print(table.concat(lines, "\n"))
 	status.Text = "Printed to Output (View -> Output). Copy it and send it to Claude."
