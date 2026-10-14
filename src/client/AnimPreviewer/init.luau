@@ -1,52 +1,55 @@
--- Animation previewer + selector.
--- Click an animation to preview it in the preview window (on the pack's
--- own dummy), then click a slot to apply it to your character live.
--- Picks are saved automatically (see the server script) and kept after Stop.
+-- Animation picker (press P).
+-- 1. Click a move on the left (Walk, Run, Jump...).
+-- 2. Click an animation in the middle - it plays in the preview on the right
+--    AND goes on your character straight away. Picks are saved automatically.
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService = game:GetService("UserInputService")
+local HttpService = game:GetService("HttpService")
 local KeyframeSequenceProvider = game:GetService("KeyframeSequenceProvider")
 
 local player = Players.LocalPlayer
-
 local config = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("AnimConfig"))
-local SLOTS = config.Order
-local autoPicks = {} -- filled once the animation list is loaded
+local AutoPick = require(ReplicatedStorage.Shared:WaitForChild("AutoPick"))
 
-local HttpService = game:GetService("HttpService")
+-- friendly names for the moves
+local LABELS = {
+	Idle = "Standing still", Walk = "Walk forward", WalkBack = "Walk backward",
+	WalkLeft = "Walk left", WalkRight = "Walk right", Run = "Run forward (Shift)",
+	RunBack = "Run backward", RunLeft = "Run left", RunRight = "Run right",
+	Jump = "Jump", Fall = "Falling", Land = "Landing", Climb = "Climbing",
+	ClimbIdle = "Climb (not moving)", Swim = "Swimming", Crouch = "Crouch (C)",
+	CrouchWalk = "Crouch walk forward", CrouchWalkBack = "Crouch walk backward",
+	CrouchWalkLeft = "Crouch walk left", CrouchWalkRight = "Crouch walk right",
+	Slide = "Slide (C while running)",
+}
 
--- slot name -> pack path, starting from the saved picks
-local selection = {}
+-- Saved picks -----------------------------------------------------------------
+local picks = {} -- move -> pack path
 do
 	local saved = ReplicatedStorage:WaitForChild("SavedAnimPicks", 10)
 	local ok, data = pcall(HttpService.JSONDecode, HttpService, saved and saved.Value or "{}")
 	if ok and type(data) == "table" then
-		selection = data
+		picks = data
 	end
 end
 
--- Collect animations ------------------------------------------------------
-local function collectAnimations()
+-- Animations in the pack --------------------------------------------------------
+local anims = {} -- { name = "Walks/Walk Back", anim = Animation, rig = Model }
+do
 	local folder = ReplicatedStorage:WaitForChild("PreviewAnimations", 10)
-	if not folder then
-		return {}
-	end
-	local anims = {}
-	for _, inst in folder:GetDescendants() do
+	for _, inst in folder and folder:GetDescendants() or {} do
 		local anim
 		if inst:IsA("Animation") and inst.AnimationId ~= "" then
 			anim = inst
 		elseif inst:IsA("KeyframeSequence") then
-			-- raw, un-uploaded animation: temporary ID, Studio playtests only
 			local ok, id = pcall(KeyframeSequenceProvider.RegisterKeyframeSequence, KeyframeSequenceProvider, inst)
 			if ok then
 				anim = Instance.new("Animation")
 				anim.AnimationId = id
-			else
-				warn("[AnimPreviewer] Couldn't register", inst:GetFullName(), id)
 			end
 		end
 		if anim then
-			-- path inside the folder, e.g. "Runs/Sprint", skipping AnimSaves
 			local parts, node = {}, inst
 			while node and node ~= folder do
 				if node.Name ~= "AnimSaves" then
@@ -54,18 +57,26 @@ local function collectAnimations()
 				end
 				node = node.Parent
 			end
-			table.insert(anims, {
-				name = table.concat(parts, "/"),
-				anim = anim,
-				rig = inst:FindFirstAncestorOfClass("Model"),
-			})
+			table.insert(anims, { name = table.concat(parts, "/"), anim = anim, rig = inst:FindFirstAncestorOfClass("Model") })
 		end
 	end
 	table.sort(anims, function(a, b) return a.name:lower() < b.name:lower() end)
-	return anims
 end
 
--- UI helpers ----------------------------------------------------------------
+local autoPicks
+do
+	local paths = {}
+	for _, entry in anims do
+		table.insert(paths, entry.name)
+	end
+	autoPicks = AutoPick(paths)
+end
+
+local function currentPick(move)
+	return picks[move] or config.Slots[move] or autoPicks[move]
+end
+
+-- UI ------------------------------------------------------------------------------
 local function make(className, props, parent)
 	local inst = Instance.new(className)
 	for k, v in props do
@@ -75,85 +86,92 @@ local function make(className, props, parent)
 	return inst
 end
 
-local function button(text, color, parent)
+local GREY, BLUE, GREEN = Color3.fromRGB(50, 50, 60), Color3.fromRGB(40, 90, 150), Color3.fromRGB(40, 130, 70)
+
+local function button(text, parent)
 	local b = make("TextButton", {
-		BackgroundColor3 = color,
+		Size = UDim2.new(1, -8, 0, 30),
+		BackgroundColor3 = GREY,
 		Font = Enum.Font.Gotham,
 		TextSize = 13,
 		TextColor3 = Color3.new(1, 1, 1),
-		Text = text,
-		AutoButtonColor = true,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		Text = "  " .. text,
 	}, parent)
 	make("UICorner", { CornerRadius = UDim.new(0, 6) }, b)
 	return b
 end
 
-local gui = make("ScreenGui", { Name = "AnimPreviewer", ResetOnSpawn = false }, player:WaitForChild("PlayerGui"))
+local function column(x, width, heading, parent)
+	make("TextLabel", {
+		Size = UDim2.fromOffset(width, 20),
+		Position = UDim2.fromOffset(x, 56),
+		BackgroundTransparency = 1,
+		Font = Enum.Font.GothamBold,
+		TextSize = 13,
+		TextColor3 = Color3.fromRGB(200, 200, 210),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Text = heading,
+	}, parent)
+	local list = make("ScrollingFrame", {
+		Size = UDim2.new(0, width, 1, -88),
+		Position = UDim2.fromOffset(x, 78),
+		BackgroundTransparency = 1,
+		ScrollBarThickness = 6,
+		AutomaticCanvasSize = Enum.AutomaticSize.Y,
+		CanvasSize = UDim2.new(),
+	}, parent)
+	make("UIListLayout", { Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder }, list)
+	return list
+end
 
--- P shows/hides the previewer
-game:GetService("UserInputService").InputBegan:Connect(function(input, processed)
-	if not processed and input.KeyCode == Enum.KeyCode.P then
-		gui.Enabled = not gui.Enabled
-	end
-end)
-
+local gui = make("ScreenGui", { Name = "AnimPicker", ResetOnSpawn = false }, player:WaitForChild("PlayerGui"))
 local frame = make("Frame", {
-	Size = UDim2.fromOffset(760, 460),
-	Position = UDim2.new(0.5, -380, 0.5, -230),
+	Size = UDim2.fromOffset(800, 480),
+	Position = UDim2.new(0.5, -400, 0.5, -240),
 	BackgroundColor3 = Color3.fromRGB(30, 30, 36),
 }, gui)
 make("UICorner", {}, frame)
 
-local title = make("TextLabel", {
-	Size = UDim2.new(1, -16, 0, 26),
-	Position = UDim2.fromOffset(8, 4),
+make("TextLabel", {
+	Size = UDim2.new(1, -16, 0, 24),
+	Position = UDim2.fromOffset(10, 6),
 	BackgroundTransparency = 1,
 	Font = Enum.Font.GothamBold,
-	TextSize = 16,
+	TextSize = 18,
 	TextColor3 = Color3.new(1, 1, 1),
 	TextXAlignment = Enum.TextXAlignment.Left,
-	Text = "Loading animations...",
+	Text = "Animation Picker  (P to close)",
 }, frame)
-
 local status = make("TextLabel", {
-	Size = UDim2.new(1, -16, 0, 32),
-	Position = UDim2.fromOffset(8, 28),
+	Size = UDim2.new(1, -16, 0, 20),
+	Position = UDim2.fromOffset(10, 30),
 	BackgroundTransparency = 1,
 	Font = Enum.Font.Gotham,
-	TextSize = 12,
-	TextWrapped = true,
-	TextColor3 = Color3.fromRGB(180, 180, 190),
+	TextSize = 13,
+	TextColor3 = Color3.fromRGB(255, 220, 120),
 	TextXAlignment = Enum.TextXAlignment.Left,
-	TextYAlignment = Enum.TextYAlignment.Top,
-	Text = "1. Click an animation on the left - it plays in the preview window.  2. Click a slot on the right to apply it.",
+	TextTruncate = Enum.TextTruncate.AtEnd,
+	Text = ("Step 1: click a move on the left.   (%d animations found)"):format(#anims),
 }, frame)
 
--- left: animation list
-local list = make("ScrollingFrame", {
-	Size = UDim2.new(0, 240, 1, -108),
-	Position = UDim2.fromOffset(8, 64),
+local movesList = column(10, 230, "1. MOVE", frame)
+local choicesList = column(250, 260, "2. ANIMATION (click to use it)", frame)
+
+make("TextLabel", {
+	Size = UDim2.fromOffset(270, 20),
+	Position = UDim2.fromOffset(520, 56),
 	BackgroundTransparency = 1,
-	ScrollBarThickness = 6,
-	AutomaticCanvasSize = Enum.AutomaticSize.Y,
-	CanvasSize = UDim2.new(),
+	Font = Enum.Font.GothamBold,
+	TextSize = 13,
+	TextColor3 = Color3.fromRGB(200, 200, 210),
+	TextXAlignment = Enum.TextXAlignment.Left,
+	Text = "PREVIEW",
 }, frame)
-make("UIListLayout", { Padding = UDim.new(0, 4) }, list)
-
--- right: slots
-local slotList = make("ScrollingFrame", {
-	Size = UDim2.new(0, 220, 1, -108),
-	Position = UDim2.new(1, -228, 0, 64),
-	BackgroundTransparency = 1,
-	ScrollBarThickness = 6,
-	AutomaticCanvasSize = Enum.AutomaticSize.Y,
-	CanvasSize = UDim2.new(),
-}, frame)
-make("UIListLayout", { Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder }, slotList)
-
--- middle: preview window
 local viewport = make("ViewportFrame", {
-	Size = UDim2.fromOffset(268, 340),
-	Position = UDim2.fromOffset(256, 64),
+	Size = UDim2.new(0, 270, 1, -88),
+	Position = UDim2.fromOffset(520, 78),
 	BackgroundColor3 = Color3.fromRGB(55, 58, 70),
 	Ambient = Color3.fromRGB(200, 200, 200),
 	LightColor = Color3.new(1, 1, 1),
@@ -162,109 +180,57 @@ make("UICorner", {}, viewport)
 local worldModel = make("WorldModel", {}, viewport)
 local camera = make("Camera", { FieldOfView = 40 }, viewport)
 viewport.CurrentCamera = camera
-local previewLabel = make("TextLabel", {
-	Size = UDim2.new(1, -12, 0, 20),
-	Position = UDim2.fromOffset(6, 4),
-	BackgroundTransparency = 1,
-	Font = Enum.Font.GothamBold,
-	TextSize = 13,
-	TextColor3 = Color3.new(1, 1, 1),
-	TextXAlignment = Enum.TextXAlignment.Left,
-	TextTruncate = Enum.TextTruncate.AtEnd,
-	Text = "Preview",
-	ZIndex = 2,
-}, viewport)
 
-local stopButton = button("Stop", Color3.fromRGB(170, 50, 50), frame)
-stopButton.Size = UDim2.new(0.5, -12, 0, 30)
-stopButton.Position = UDim2.new(0, 8, 1, -38)
-stopButton.Text = "Stop preview"
-stopButton.Font = Enum.Font.GothamBold
+UserInputService.InputBegan:Connect(function(input, processed)
+	if not processed and input.KeyCode == Enum.KeyCode.P then
+		gui.Enabled = not gui.Enabled
+	end
+end)
 
-local printButton = button("Reset all to automatic", Color3.fromRGB(90, 90, 100), frame)
-printButton.Size = UDim2.new(0.5, -12, 0, 30)
-printButton.Position = UDim2.new(0.5, 4, 1, -38)
-printButton.Font = Enum.Font.GothamBold
+-- Preview ---------------------------------------------------------------------------
+local previewRig, previewTrack
 
--- Playback ------------------------------------------------------------------
-local currentTrack
-local previewRig
-local current -- entry being previewed
-
-local function stop()
-	if currentTrack then
-		currentTrack:Stop(0)
-		currentTrack = nil
+local function preview(entry)
+	if previewTrack then
+		previewTrack:Stop(0)
 	end
 	if previewRig then
 		previewRig:Destroy()
-		previewRig = nil
 	end
-	previewLabel.Text = "Preview"
-end
-
--- copy of the pack's own dummy (the rig the animation was made for),
--- placed in the preview window's WorldModel
-local function spawnPreviewRig(rig)
-	local clone = rig:Clone()
+	previewRig, previewTrack = nil, nil
+	if not entry or not entry.rig then
+		return
+	end
+	local clone = entry.rig:Clone()
 	for _, inst in clone:GetDescendants() do
-		if inst.Name == "AnimSaves" or inst:IsA("Script") or inst:IsA("LocalScript") then
+		if inst.Name == "AnimSaves" or inst:IsA("BaseScript") then
 			inst:Destroy()
 		end
 	end
 	local root = clone:FindFirstChild("HumanoidRootPart") or clone.PrimaryPart or clone:FindFirstChildWhichIsA("BasePart", true)
-	if not root then
+	local controller = clone:FindFirstChildOfClass("Humanoid") or clone:FindFirstChildOfClass("AnimationController")
+	if not root or not controller then
 		clone:Destroy()
-		return nil
+		return
 	end
 	root.Anchored = true
 	clone.PrimaryPart = root
 	clone:PivotTo(CFrame.new())
 	clone.Parent = worldModel
-	-- camera in front of the rig, framing the whole body
 	local box, size = clone:GetBoundingBox()
 	local distance = math.max(size.X, size.Y) * 1.9 + 2
-	local center = box.Position
-	camera.CFrame = CFrame.lookAt(center + Vector3.new(0, 0, -distance), center)
-	return clone
-end
-
-local function play(entry)
-	stop()
-	current = entry
-	if not entry.rig then
-		status.Text = entry.name .. " has no dummy rig to preview on."
-		return
-	end
-	previewRig = spawnPreviewRig(entry.rig)
-	local controller = previewRig and (previewRig:FindFirstChildOfClass("Humanoid") or previewRig:FindFirstChildOfClass("AnimationController"))
-	if not controller then
-		status.Text = "Couldn't preview " .. entry.name .. " - its dummy has no Humanoid."
-		return
-	end
+	camera.CFrame = CFrame.lookAt(box.Position + Vector3.new(0, 0, -distance), box.Position)
 	local animator = controller:FindFirstChildOfClass("Animator") or Instance.new("Animator", controller)
 	local ok, track = pcall(animator.LoadAnimation, animator, entry.anim)
-	if not ok then
-		warn("[AnimPreviewer] Couldn't load", entry.name, track)
-		status.Text = "Couldn't load " .. entry.name .. " - check Output."
-		return
+	if ok then
+		track.Looped = true
+		track:Play(0)
+		previewTrack = track
 	end
-	track.Looped = true
-	track:Play(0)
-	currentTrack = track
-	previewLabel.Text = entry.name
-	status.Text = "Previewing " .. entry.name .. ". Like it? Click a slot on the right to apply it."
+	previewRig = clone
 end
 
--- Slots ---------------------------------------------------------------------
-local slotButtons = {}
-
--- Animate script picks these up live (player attributes "Anim_<slot>")
-local function applySlot(slot)
-	-- "" tells the Animate script to go back to automatic
-	player:SetAttribute("Anim_" .. slot, selection[slot] or "")
-end
-
+-- Saving ------------------------------------------------------------------------------
 local saveRemote = ReplicatedStorage:WaitForChild("SaveAnimPicks", 10)
 local saving, pending = false, false
 local function save()
@@ -272,101 +238,121 @@ local function save()
 		return
 	end
 	if saving then
-		pending = true -- save again once the current save finishes
+		pending = true
 		return
 	end
 	saving = true
 	task.spawn(function()
-		local ok, success, err = pcall(saveRemote.InvokeServer, saveRemote, selection)
+		local ok, success, err = pcall(saveRemote.InvokeServer, saveRemote, picks)
 		saving = false
 		if pending then
 			pending = false
 			save()
-			return
-		end
-		if ok and success then
-			status.Text ..= "  Saved."
+		elseif ok and success then
+			status.Text ..= "  ✓ Saved"
 		else
-			status.Text = "Applied, but NOT saved after Stop: " .. tostring(err or success)
+			status.Text = "Works now, but won't be kept after Stop: " .. tostring(err or success)
 		end
 	end)
 end
 
-local function refreshSlot(slot)
-	local picked = selection[slot]
-	local current = picked or config.Slots[slot] or autoPicks[slot]
-	local b = slotButtons[slot]
-	b.Text = ("  %s: %s"):format(slot, current or "—")
-	b.BackgroundColor3 = picked and Color3.fromRGB(40, 90, 150) or Color3.fromRGB(50, 50, 60)
+-- Moves and choices -------------------------------------------------------------------
+local moveButtons = {}
+local selectedMove
+
+local function refreshMove(move)
+	local b = moveButtons[move]
+	local pick = currentPick(move)
+	b.Text = ("  %s\n  → %s"):format(LABELS[move] or move, pick and pick:match("[^/]+$") or "none")
+	b.BackgroundColor3 = move == selectedMove and BLUE or GREY
 end
 
-for i, slot in SLOTS do
-	local b = button("", Color3.fromRGB(50, 50, 60), slotList)
-	b.Size = UDim2.new(1, -8, 0, 28)
-	b.LayoutOrder = i
-	b.TextXAlignment = Enum.TextXAlignment.Left
-	b.TextTruncate = Enum.TextTruncate.AtEnd
-	slotButtons[slot] = b
-	refreshSlot(slot)
-	b.MouseButton1Click:Connect(function()
-		if not current then
-			status.Text = "Click an animation on the left first, then a slot."
-			return
+-- suggest animations from the same folder as the automatic pick first
+local function sortedChoices(move)
+	local pick = currentPick(move)
+	local folder = pick and pick:match("^(.*)/[^/]+$")
+	local list = table.clone(anims)
+	table.sort(list, function(a, b)
+		local aIn = folder and a.name:sub(1, #folder) == folder
+		local bIn = folder and b.name:sub(1, #folder) == folder
+		if aIn ~= bIn then
+			return aIn
 		end
-		if selection[slot] == current.name then
-			selection[slot] = nil -- click again to undo
-			status.Text = "Reset " .. slot .. " to automatic."
-		else
-			selection[slot] = current.name
-			status.Text = ("%s -> %s. Press P and move to try it."):format(current.name, slot)
-		end
-		refreshSlot(slot)
-		applySlot(slot)
-		save()
+		return a.name:lower() < b.name:lower()
 	end)
+	return list
 end
 
-stopButton.MouseButton1Click:Connect(function()
-	stop()
-	current = nil
-	status.Text = "Stopped. Walk around to see the animations you applied."
-end)
-
-printButton.MouseButton1Click:Connect(function()
-	for _, slot in SLOTS do
-		selection[slot] = nil
-		applySlot(slot)
-		refreshSlot(slot)
+local function showChoices(move)
+	for _, child in choicesList:GetChildren() do
+		if child:IsA("GuiButton") then
+			child:Destroy()
+		end
 	end
-	status.Text = "All slots back to automatic."
+	local pick = currentPick(move)
+	for i, entry in sortedChoices(move) do
+		local b = button(entry.name, choicesList)
+		b.LayoutOrder = i
+		b.BackgroundColor3 = entry.name == pick and GREEN or GREY
+		b.MouseButton1Click:Connect(function()
+			picks[move] = entry.name
+			player:SetAttribute("Anim_" .. move, entry.name) -- Animate script swaps it in now
+			preview(entry)
+			for _, other in choicesList:GetChildren() do
+				if other:IsA("GuiButton") then
+					other.BackgroundColor3 = GREY
+				end
+			end
+			b.BackgroundColor3 = GREEN
+			refreshMove(move)
+			status.Text = ("%s now uses %s. Close with P and try it."):format(LABELS[move] or move, entry.name)
+			save()
+		end)
+	end
+end
+
+local reset = button("Reset everything to automatic", movesList)
+reset.LayoutOrder = 1000
+reset.BackgroundColor3 = Color3.fromRGB(110, 50, 50)
+reset.MouseButton1Click:Connect(function()
+	picks = {}
+	for _, move in config.Order do
+		player:SetAttribute("Anim_" .. move, "")
+		refreshMove(move)
+	end
+	if selectedMove then
+		showChoices(selectedMove)
+	end
+	status.Text = "Everything is back to automatic."
 	save()
 end)
 
--- Build list ------------------------------------------------------------------
-local anims = collectAnimations()
-do
-	local paths = {}
-	for _, entry in anims do
-		table.insert(paths, entry.name)
-	end
-	autoPicks = require(ReplicatedStorage.Shared:WaitForChild("AutoPick"))(paths)
-	for _, slot in SLOTS do
-		refreshSlot(slot)
-	end
-end
-title.Text = ("Animations (%d)"):format(#anims)
-if #anims == 0 then
-	status.Text = "No animations found. Check Output for [AnimPreviewer] messages."
+for i, move in config.Order do
+	local b = button("", movesList)
+	b.Size = UDim2.new(1, -8, 0, 40)
+	b.LayoutOrder = i
+	moveButtons[move] = b
+	refreshMove(move)
+	b.MouseButton1Click:Connect(function()
+		local previous = selectedMove
+		selectedMove = move
+		if previous then
+			refreshMove(previous)
+		end
+		refreshMove(move)
+		showChoices(move)
+		local pick = currentPick(move)
+		for _, entry in anims do
+			if entry.name == pick then
+				preview(entry)
+			end
+		end
+		status.Text = ("Step 2: click an animation for \"%s\". Green = the one it uses now."):format(LABELS[move] or move)
+	end)
 end
 
-for _, entry in anims do
-	local b = button("  " .. entry.name, Color3.fromRGB(50, 50, 60), list)
-	b.Size = UDim2.new(1, -8, 0, 28)
-	b.TextXAlignment = Enum.TextXAlignment.Left
-	b.TextTruncate = Enum.TextTruncate.AtEnd
-	b.MouseButton1Click:Connect(function()
-		play(entry)
-	end)
+if #anims == 0 then
+	status.Text = "No animations found - is the Animations folder in the game?"
 end
 
 return {}

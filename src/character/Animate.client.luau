@@ -119,6 +119,7 @@ local PRIORITY = { Jump = Enum.AnimationPriority.Action, Land = Enum.AnimationPr
 	Slide = Enum.AnimationPriority.Movement }
 
 local tracks = {}
+local problems = {} -- slot -> why it didn't load
 
 -- live previewer picks (player attributes "Anim_<slot>") win, then saved
 -- picks, then the config file, then the automatic picks
@@ -135,6 +136,7 @@ local function loadSlot(slot)
 		tracks[slot]:Stop(0)
 		tracks[slot] = nil
 	end
+	problems[slot] = nil
 	local value = slotValue(slot)
 	if not value or value == "" then
 		return
@@ -142,11 +144,13 @@ local function loadSlot(slot)
 	local anim, err = toAnimation(value)
 	if not anim then
 		warn(("[Animate] %s: %s"):format(slot, err))
+		problems[slot] = tostring(err)
 		return
 	end
 	local ok, track = pcall(animator.LoadAnimation, animator, anim)
 	if not ok then
 		warn("[Animate] Couldn't load", slot, track)
+		problems[slot] = tostring(track)
 		return
 	end
 	track.Looped = not ONE_SHOT[slot]
@@ -155,6 +159,48 @@ local function loadSlot(slot)
 end
 
 local currentGroup
+local stopGroup -- defined below
+
+-- On-screen status (Studio only) so problems show without opening Output
+local statusLabel
+if RunService:IsStudio() then
+	local gui = Instance.new("ScreenGui")
+	gui.Name = "AnimateStatus"
+	gui.ResetOnSpawn = true
+	statusLabel = Instance.new("TextLabel")
+	statusLabel.Size = UDim2.new(1, 0, 0, 22)
+	statusLabel.Position = UDim2.new(0, 0, 1, -22)
+	statusLabel.BackgroundColor3 = Color3.new(0, 0, 0)
+	statusLabel.BackgroundTransparency = 0.4
+	statusLabel.Font = Enum.Font.Gotham
+	statusLabel.TextSize = 13
+	statusLabel.TextColor3 = Color3.new(1, 1, 1)
+	statusLabel.TextTruncate = Enum.TextTruncate.AtEnd
+	statusLabel.Parent = gui
+	gui.Parent = player:WaitForChild("PlayerGui")
+end
+
+local function updateStatus()
+	if not statusLabel then
+		return
+	end
+	local loaded, broken = 0, {}
+	for _, slot in config.Order do
+		if tracks[slot] then
+			loaded += 1
+		elseif problems[slot] then
+			table.insert(broken, slot .. ": " .. problems[slot])
+		end
+	end
+	local text = ("Body: %s  |  %d animations on your character  |  playing: %s"):format(
+		humanoid.RigType.Name, loaded, currentGroup or "-")
+	if not pack then
+		text ..= "  |  Animations folder NOT found"
+	elseif #broken > 0 then
+		text ..= "  |  PROBLEM " .. broken[1]
+	end
+	statusLabel.Text = text
+end
 
 for _, slot in config.Order do
 	loadSlot(slot)
@@ -163,7 +209,11 @@ player.AttributeChanged:Connect(function(attribute)
 	local slot = attribute:match("^Anim_(.+)$")
 	if slot then
 		loadSlot(slot)
-		currentGroup = nil -- restart whatever is playing with the new track
+		-- restart whatever is playing so the new track is used
+		if currentGroup then
+			stopGroup(currentGroup)
+		end
+		currentGroup = nil
 	end
 end)
 
@@ -204,7 +254,7 @@ local function directionWeights(group)
 	return list, weights
 end
 
-local function stopGroup(group)
+function stopGroup(group)
 	for _, track in groupTracks(group) do
 		track:Stop(0.15)
 	end
@@ -280,6 +330,7 @@ if config.Strafe then
 end
 
 RunService.Heartbeat:Connect(function()
+	updateStatus()
 	local state = humanoid:GetState()
 	local horizontal = (root.AssemblyLinearVelocity * Vector3.new(1, 0, 1)).Magnitude
 	local sliding = os.clock() < slideUntil
