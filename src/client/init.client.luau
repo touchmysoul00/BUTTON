@@ -1,1 +1,1 @@
-print("Hello from Rojo! (client)")
+require(script.AnimPreviewer)
