@@ -11,7 +11,6 @@ local WALK_SPEED = 16
 local RUN_SPEED = 26
 local CROUCH_SPEED = 8
 local SLIDE_TIME = 0.8
-local DIRECTIONS = { "", "Back", "Left", "Right" }
 
 local player = Players.LocalPlayer
 local character = script.Parent
@@ -159,7 +158,7 @@ local function loadSlot(slot)
 end
 
 local currentGroup
-local stopGroup -- defined below
+local stopGroup -- defined below (stops the looping track)
 
 -- On-screen status (Studio only) so problems show without opening Output
 local statusLabel
@@ -210,79 +209,87 @@ player.AttributeChanged:Connect(function(attribute)
 	if slot then
 		loadSlot(slot)
 		-- restart whatever is playing so the new track is used
-		if currentGroup then
-			stopGroup(currentGroup)
-		end
+		stopGroup()
 		currentGroup = nil
 	end
 end)
 
 -- Playing -------------------------------------------------------------------
--- A "group" is a looping movement (Walk, Run, Idle, ...). Walk/Run/CrouchWalk
--- also have Back/Left/Right slots, blended by which way you're moving.
-local function groupTracks(group)
-	local list = {}
-	for _, dir in DIRECTIONS do
-		local track = tracks[group .. dir]
-		if track then
-			list[dir] = track
-		end
-	end
-	return list
-end
+-- Exactly one looping track plays at a time (blending two walk cycles makes
+-- the legs scissor). Walk/Run/CrouchWalk pick the Back/Left/Right version
+-- for the direction you're mostly moving in.
+local currentTrack
+local currentDir = ""
 
-local function directionWeights(group)
-	local list = groupTracks(group)
+-- direction you're moving relative to where the character faces, with a
+-- little stickiness so it doesn't flicker around 45 degrees
+local function moveDirection()
 	local velocity = root.AssemblyLinearVelocity * Vector3.new(1, 0, 1)
-	local weights = { [""] = 1, Back = 0, Left = 0, Right = 0 }
-	if velocity.Magnitude > 0.5 and (list.Back or list.Left or list.Right) then
-		local localDir = root.CFrame:VectorToObjectSpace(velocity.Unit)
-		weights = {
-			[""] = math.max(0, -localDir.Z),
-			Back = math.max(0, localDir.Z),
-			Left = math.max(0, -localDir.X),
-			Right = math.max(0, localDir.X),
-		}
-		-- directions without their own animation use the forward one
-		for _, dir in { "Back", "Left", "Right" } do
-			if not list[dir] then
-				weights[""] += weights[dir]
-				weights[dir] = 0
-			end
+	if velocity.Magnitude < 0.5 then
+		return currentDir
+	end
+	local d = root.CFrame:VectorToObjectSpace(velocity.Unit)
+	local scores = { [""] = -d.Z, Back = d.Z, Left = -d.X, Right = d.X }
+	local best, bestScore = currentDir, (scores[currentDir] or 0) + 0.15
+	for dir, score in scores do
+		if score > bestScore then
+			best, bestScore = dir, score
 		end
 	end
-	return list, weights
+	currentDir = best
+	return best
 end
 
-function stopGroup(group)
-	for _, track in groupTracks(group) do
-		track:Stop(0.15)
+-- the track for a movement; returns track, speed sign (-1 = play reversed)
+local function pickTrack(group)
+	if group ~= "Walk" and group ~= "Run" and group ~= "CrouchWalk" then
+		return tracks[group], 1
+	end
+	local dir = moveDirection()
+	if tracks[group .. dir] then
+		return tracks[group .. dir], 1
+	end
+	-- running without its own direction animation: use the walking one
+	if group == "Run" and tracks["Walk" .. dir] and dir ~= "" then
+		return tracks["Walk" .. dir], 1
+	end
+	-- backward without an animation: the forward one played in reverse
+	if dir == "Back" then
+		return tracks[group], -1
+	end
+	return tracks[group], 1
+end
+
+function stopGroup()
+	if currentTrack then
+		currentTrack:Stop(0.2)
+		currentTrack = nil
 	end
 end
 
 local function setGroup(group, speed)
-	local list, weights = directionWeights(group)
-	if not next(list) then
+	local track, sign = pickTrack(group)
+	if not track then
 		return
 	end
-	if currentGroup ~= group then
-		if currentGroup then
-			stopGroup(currentGroup)
-		end
-		currentGroup = group
-		for _, track in list do
-			track:Play(0.15, 0.001)
-		end
+	if track ~= currentTrack then
+		stopGroup()
+		track:Play(0.2)
+		currentTrack = track
 	end
-	for dir, track in list do
-		track:AdjustWeight(math.max(weights[dir] or 0, 0.001), 0.15)
-		track:AdjustSpeed(speed or 1)
-	end
+	currentGroup = group
+	track:AdjustSpeed((speed or 1) * sign)
 end
 
 local function playOnce(slot)
 	if tracks[slot] then
-		tracks[slot]:Play(0.05)
+		tracks[slot]:Play(0.1)
+	end
+end
+
+local function stopOnce(slot)
+	if tracks[slot] and tracks[slot].IsPlaying then
+		tracks[slot]:Stop(0.15)
 	end
 end
 
@@ -317,16 +324,39 @@ UserInputService.InputEnded:Connect(function(input)
 	end
 end)
 
+local airSince -- when we left the ground
+
 humanoid.StateChanged:Connect(function(_, new)
 	if new == Enum.HumanoidStateType.Jumping then
 		playOnce("Jump")
 	elseif new == Enum.HumanoidStateType.Landed then
-		playOnce("Land")
+		stopOnce("Jump")
+		-- only a real fall, and not while running off (it would freeze the legs)
+		local airTime = airSince and os.clock() - airSince or 0
+		local moving = humanoid.MoveDirection.Magnitude > 0.1
+		if airTime > 0.5 and not moving then
+			playOnce("Land")
+		end
 	end
 end)
 
 if config.Strafe then
 	humanoid.AutoRotate = false
+	-- face where the camera looks, right after the camera updates each frame
+	RunService:BindToRenderStep("AnimateStrafe", Enum.RenderPriority.Camera.Value + 1, function()
+		local state = humanoid:GetState()
+		if state == Enum.HumanoidStateType.Climbing or state == Enum.HumanoidStateType.Swimming
+			or state == Enum.HumanoidStateType.Dead or humanoid.Sit then
+			return
+		end
+		local look = workspace.CurrentCamera.CFrame.LookVector * Vector3.new(1, 0, 1)
+		if look.Magnitude > 0.01 then
+			root.CFrame = CFrame.lookAt(root.Position, root.Position + look)
+		end
+	end)
+	humanoid.Died:Connect(function()
+		RunService:UnbindFromRenderStep("AnimateStrafe")
+	end)
 end
 
 RunService.Heartbeat:Connect(function()
@@ -339,13 +369,14 @@ RunService.Heartbeat:Connect(function()
 
 	humanoid.WalkSpeed = (sliding or crouching) and CROUCH_SPEED or (sprinting and RUN_SPEED or WALK_SPEED)
 
-	-- strafe: keep facing where the camera looks
-	if config.Strafe and not climbing and not swimming and not sliding then
-		local look = workspace.CurrentCamera.CFrame.LookVector * Vector3.new(1, 0, 1)
-		if look.Magnitude > 0.01 then
-			root.CFrame = CFrame.lookAt(root.Position, root.Position + look)
-		end
+	local inAir = state == Enum.HumanoidStateType.Freefall or state == Enum.HumanoidStateType.Jumping
+	if inAir then
+		airSince = airSince or os.clock()
+	else
+		airSince = nil
 	end
+	-- ignore tiny drops (stairs, bumps) so the legs don't flicker into falling
+	local falling = inAir and (state == Enum.HumanoidStateType.Jumping or os.clock() - airSince > 0.25)
 
 	if climbing then
 		local climbSpeed = math.abs(root.AssemblyLinearVelocity.Y)
@@ -356,15 +387,15 @@ RunService.Heartbeat:Connect(function()
 		end
 	elseif swimming then
 		setGroup(tracks.Swim and "Swim" or "Idle")
-	elseif state == Enum.HumanoidStateType.Freefall or state == Enum.HumanoidStateType.Jumping then
-		setGroup("Fall")
+	elseif falling then
+		setGroup(tracks.Fall and "Fall" or "Idle")
 	elseif sliding and tracks.Slide then
 		setGroup("Slide")
 	elseif crouching and tracks.Crouch then
 		setGroup((horizontal > 0.5 and tracks.CrouchWalk) and "CrouchWalk" or "Crouch", horizontal > 0.5 and horizontal / CROUCH_SPEED or 1)
 	elseif horizontal > 0.5 then
 		if sprinting and tracks.Run then
-			setGroup("Run")
+			setGroup("Run", horizontal / RUN_SPEED)
 		else
 			setGroup(tracks.Walk and "Walk" or "Run", horizontal / WALK_SPEED)
 		end
