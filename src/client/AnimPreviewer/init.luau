@@ -5,38 +5,41 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local player = Players.LocalPlayer
 
-local function isAnimationsFolder(inst)
-	local name = inst.Name:lower()
-	return name == "animations" or name == "previewanimations"
-end
+local KeyframeSequenceProvider = game:GetService("KeyframeSequenceProvider")
 
-local function findFolders()
-	local folders = {}
-	for _, root in { ReplicatedStorage, workspace, game:GetService("StarterPack"), game:GetService("ReplicatedFirst") } do
-		for _, inst in root:GetDescendants() do
-			-- skip the Animate script's own folders inside characters
-			if isAnimationsFolder(inst) and not inst:FindFirstAncestorOfClass("Model") then
-				table.insert(folders, inst)
+-- Collects Animations and KeyframeSequences (raw, un-uploaded animations,
+-- e.g. inside a rig's AnimSaves) from the PreviewAnimations folder.
+-- KeyframeSequences get a temporary ID that only works in Studio playtests.
+local function collectAnimations()
+	local folder = ReplicatedStorage:WaitForChild("PreviewAnimations", 10)
+	if not folder then
+		return {}
+	end
+	local anims, seen = {}, {}
+	for _, inst in folder:GetDescendants() do
+		local anim
+		if inst:IsA("Animation") and inst.AnimationId ~= "" then
+			anim = inst
+		elseif inst:IsA("KeyframeSequence") then
+			local ok, id = pcall(KeyframeSequenceProvider.RegisterKeyframeSequence, KeyframeSequenceProvider, inst)
+			if ok then
+				anim = Instance.new("Animation")
+				anim.AnimationId = id
+			else
+				warn("[AnimPreviewer] Couldn't register", inst:GetFullName(), id)
 			end
 		end
-	end
-	return folders
-end
-
-local function collectAnimations()
-	local anims, seen = {}, {}
-	for _, folder in findFolders() do
-		for _, inst in folder:GetDescendants() do
-			if inst:IsA("Animation") and inst.AnimationId ~= "" and not seen[inst.AnimationId] then
-				seen[inst.AnimationId] = true
-				-- show the path inside the folder, e.g. "Dance/Dance1"
-				local parts, node = {}, inst
-				while node and node ~= folder do
+		if anim and not seen[inst] then
+			seen[inst] = true
+			-- show the path inside the folder, e.g. "Runs/Sprint", skipping AnimSaves
+			local parts, node = {}, inst
+			while node and node ~= folder do
+				if node.Name ~= "AnimSaves" then
 					table.insert(parts, 1, node.Name)
-					node = node.Parent
 				end
-				table.insert(anims, { name = table.concat(parts, "/"), anim = inst })
+				node = node.Parent
 			end
+			table.insert(anims, { name = table.concat(parts, "/"), anim = anim })
 		end
 	end
 	table.sort(anims, function(a, b) return a.name:lower() < b.name:lower() end)
@@ -143,11 +146,10 @@ stopButton.MouseButton1Click:Connect(function()
 end)
 
 -- Build list -----------------------------------------------------------
-task.wait(1) -- give the server a moment to copy a ServerStorage folder over
 local anims = collectAnimations()
 title.Text = ("Animations (%d)"):format(#anims)
 if #anims == 0 then
-	status.Text = "No Animation objects found in a folder named \"animations\" (ReplicatedStorage, Workspace, ServerStorage...)."
+	status.Text = "No animations found. Check Output for [AnimPreviewer] messages."
 end
 
 for _, entry in anims do
